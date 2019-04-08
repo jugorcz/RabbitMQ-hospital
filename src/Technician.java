@@ -1,52 +1,66 @@
-import com.rabbitmq.client.AMQP;
-import com.rabbitmq.client.Channel;
-import com.rabbitmq.client.Connection;
-import com.rabbitmq.client.ConnectionFactory;
-import com.rabbitmq.client.Consumer;
-import com.rabbitmq.client.DefaultConsumer;
-import com.rabbitmq.client.Envelope;
-
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import com.rabbitmq.client.*;
 
 public class Technician {
 
+    private static final String RPC_QUEUE_NAME = "rpc_queue";
+
+    private static int fib(int n) {
+        if (n == 0) return 0;
+        if (n == 1) return 1;
+        return fib(n - 1) + fib(n - 2);
+    }
+
     public static void main(String[] argv) throws Exception {
-
-        // info
-        System.out.println("Technician");
-
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
-        System.out.println("Enter technician skills: hip.knee hip.elbow or knee.elbow");
-        String routingKey = reader.readLine();
-
-        // connection & channel
         ConnectionFactory factory = new ConnectionFactory();
         factory.setHost("localhost");
-        Connection connection = factory.newConnection();
-        Channel channel = connection.createChannel();
 
-        // exchange
-        String EXCHANGE_NAME = "hospital";
-        channel.exchangeDeclare(EXCHANGE_NAME, "topic");
+        try (Connection connection = factory.newConnection();
+             Channel channel = connection.createChannel()) {
+            channel.queueDeclare(RPC_QUEUE_NAME, false, false, false, null);
+            channel.queuePurge(RPC_QUEUE_NAME);
 
-        // queue & bind
-        String queueName = channel.queueDeclare().getQueue();
-        channel.queueBind(queueName, EXCHANGE_NAME, routingKey);
-        System.out.println("created queue: " + queueName);
+            channel.basicQos(1);
 
-        // consumer (message handling)
-        Consumer consumer = new DefaultConsumer(channel) {
-            @Override
-            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                String message = new String(body, "UTF-8");
-                System.out.println("Received: " + message);
+            System.out.println(" [x] Awaiting RPC requests");
+
+            Object monitor = new Object();
+            DeliverCallback deliverCallback = (consumerTag, delivery) -> {
+                AMQP.BasicProperties replyProps = new AMQP.BasicProperties
+                        .Builder()
+                        .correlationId(delivery.getProperties().getCorrelationId())
+                        .build();
+
+                String response = "";
+
+                try {
+                    String message = new String(delivery.getBody(), "UTF-8");
+                    int n = Integer.parseInt(message);
+
+                    System.out.println(" [.] fib(" + message + ")");
+                    response += fib(n);
+                } catch (RuntimeException e) {
+                    System.out.println(" [.] " + e.toString());
+                } finally {
+                    channel.basicPublish("", delivery.getProperties().getReplyTo(), replyProps, response.getBytes("UTF-8"));
+                    channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
+                    // RabbitMq consumer worker thread notifies the RPC server owner thread
+                    synchronized (monitor) {
+                        monitor.notify();
+                    }
+                }
+            };
+
+            channel.basicConsume(RPC_QUEUE_NAME, false, deliverCallback, (consumerTag -> { }));
+            // Wait and be prepared to consume the message from RPC client.
+            while (true) {
+                synchronized (monitor) {
+                    try {
+                        monitor.wait();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
             }
-        };
-
-        // start listening
-        System.out.println("Waiting for messages...");
-        channel.basicConsume(queueName, true, consumer);
+        }
     }
 }
