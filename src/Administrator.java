@@ -1,48 +1,33 @@
-import com.rabbitmq.client.AMQP;
-import com.rabbitmq.client.Channel;
-import com.rabbitmq.client.Connection;
-import com.rabbitmq.client.ConnectionFactory;
-import com.rabbitmq.client.Consumer;
-import com.rabbitmq.client.DefaultConsumer;
-import com.rabbitmq.client.Envelope;
-
 import java.io.IOException;
+import java.util.concurrent.TimeoutException;
 
-public class Administrator {
+public class Administrator extends Queue{
 
-    public static void main(String[] argv) throws Exception {
+    private void initQueue() throws IOException{
+        String adminQueue = channel.queueDeclare().getQueue();
+        System.out.println("Administrator queue: " + adminQueue);
+        channel.queueBind(adminQueue, "hospital", "#");
+        channel.basicConsume(adminQueue, true, infoConsumer);
+        System.out.println("Waiting for messages... ");
+    }
 
-        // info
-        System.out.println("Administrator");
+    public void run() throws IOException, TimeoutException {
+        initChannel();
+        initQueue();
 
-        String routingKey = "#"; //listen everybody
+        while (true) {
+            System.out.println("Enter message: ");
+            String message = reader.readLine();
+            if("exit".equals(message))
+                break;
+            channel.basicPublish("info", "", null, message.getBytes());
+            System.out.println("Sent: " + message);
+        }
+    }
 
-        // connection & channel
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost("localhost");
-        Connection connection = factory.newConnection();
-        Channel channel = connection.createChannel();
-
-        // exchange
-        String EXCHANGE_NAME = "hospital";
-        channel.exchangeDeclare(EXCHANGE_NAME, "topic");
-
-        // queue & bind
-        String queueName = channel.queueDeclare().getQueue();
-        channel.queueBind(queueName, EXCHANGE_NAME, routingKey);
-        System.out.println("created queue: " + queueName);
-
-        // consumer (message handling)
-        Consumer consumer = new DefaultConsumer(channel) {
-            @Override
-            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                String message = new String(body, "UTF-8");
-                System.out.println("Received: " + message);
-            }
-        };
-
-        // start listening
-        System.out.println("Waiting for messages...");
-        channel.basicConsume(queueName, true, consumer);
+    public static void main(String[] argv) throws IOException, TimeoutException {
+        System.out.println("ADMINISTRATOR");
+        Administrator administrator = new Administrator();
+        administrator.run();
     }
 }

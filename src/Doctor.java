@@ -1,80 +1,58 @@
 import com.rabbitmq.client.AMQP;
-import com.rabbitmq.client.Channel;
-import com.rabbitmq.client.Connection;
-import com.rabbitmq.client.ConnectionFactory;
+import com.rabbitmq.client.Consumer;
+import com.rabbitmq.client.DefaultConsumer;
+import com.rabbitmq.client.Envelope;
 
 import java.io.IOException;
-import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeoutException;
 
-public class Doctor implements AutoCloseable {
+public class Doctor extends Queue  {
 
-    private Connection connection;
-    private Channel channel;
-    private String requestQueueName = "rpc_queue";
+    private String doctorId;
 
-    public Doctor() throws IOException, TimeoutException {
-        //We establish a connection and channel.
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost("localhost");
-
-        connection = factory.newConnection();
-        channel = connection.createChannel();
+    void initDoctorQueue() throws IOException {
+        String doctorQueue = channel.queueDeclare().getQueue();
+        System.out.println("Doctor queue: " + doctorQueue);
+        channel.queueBind(doctorQueue, "hospital", doctorId);
+        Consumer consumer = new DefaultConsumer(channel) {
+            @Override
+            public void handleDelivery(String consumerTag,
+                                       Envelope envelope,
+                                       AMQP.BasicProperties properties,
+                                       byte[] body)
+                    throws IOException {
+                String message = new String(body, "UTF-8");
+                System.out.println("Received: " + message);
+                String[] splittedMessage = message.split(" ");
+                System.out.println("Received " + splittedMessage[1] + " results for " + splittedMessage[0]);
+            }
+        };
+        channel.basicConsume(doctorQueue, true, consumer);
     }
 
-    public static void main(String[] argv) {
-        try (Doctor fibonacciRpc = new Doctor()) {
-            for (int i = 0; i < 32; i++) {
-                String i_str = Integer.toString(i);
-                System.out.println(" [x] Requesting fib(" + i_str + ")");
-                String response = fibonacciRpc.call(i_str);
-                System.out.println(" [.] Got '" + response + "'");
-            }
-        } catch (IOException | TimeoutException | InterruptedException e) {
-            e.printStackTrace();
+    public void run() throws IOException, TimeoutException {
+        System.out.println("Enter doctor id: ");
+        doctorId = reader.readLine();
+        initChannel();
+        initInfoQueue();
+        initDoctorQueue();
+        System.out.println("Waiting for patients....");
+        while (true) {
+            System.out.println("Enter message: <type> <name>");
+            String message = reader.readLine();
+            if("exit".equals(message))
+                break;
+            String[] msg = message.split(" ");
+            String key = doctorId + "." + msg[0];
+            channel.basicPublish("hospital", key, null, message.getBytes());
+            System.out.println("Sent: " + message);
         }
     }
 
-    //Our call method makes the actual RPC request.
-    public String call(String message) throws IOException, InterruptedException {
-        // Here, we first generate a unique correlationId number and save it -
-        // our consumer callback will use this value to match the appropriate response.
-        final String corrId = UUID.randomUUID().toString();
-
-        // Then, we create a dedicated exclusive queue for the reply and subscribe to it.
-        String replyQueueName = channel.queueDeclare().getQueue();
-        AMQP.BasicProperties props = new AMQP.BasicProperties
-                .Builder()
-                .correlationId(corrId)
-                .replyTo(replyQueueName)
-                .build();
-
-        //Next, we publish the request message, with two properties: replyTo and correlationId.
-        channel.basicPublish("", requestQueueName, props, message.getBytes("UTF-8"));
-
-        // Since our consumer delivery handling is happening in a separate thread, we're going
-        // to need something to suspend the main thread before the response arrives.
-        // Usage of BlockingQueue is one possible solutions to do so. Here we are creating
-        // ArrayBlockingQueue with capacity set to 1 as we need to wait for only one response.
-        final BlockingQueue<String> response = new ArrayBlockingQueue<>(1);
-
-        // The consumer is doing a very simple job, for every consumed response message it checks
-        // if the correlationId is the one we're looking for. If so, it puts the response to BlockingQueue.
-        String ctag = channel.basicConsume(replyQueueName, true, (consumerTag, delivery) -> {
-            if (delivery.getProperties().getCorrelationId().equals(corrId)) {
-                response.offer(new String(delivery.getBody(), "UTF-8"));
-            }
-        }, consumerTag -> {
-        });
-
-        String result = response.take();
-        channel.basicCancel(ctag);
-        return result;
+    public static void main(String[] argv) throws IOException, TimeoutException {
+        System.out.println("DOCTOR");
+        Doctor doctor = new Doctor();
+        doctor.run();
     }
 
-    public void close() throws IOException {
-        connection.close();
-    }
 }

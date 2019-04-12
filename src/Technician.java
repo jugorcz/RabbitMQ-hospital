@@ -1,66 +1,53 @@
 import com.rabbitmq.client.*;
 
-public class Technician {
+import java.io.IOException;
+import java.util.concurrent.TimeoutException;
 
-    private static final String RPC_QUEUE_NAME = "rpc_queue";
+public class Technician extends Queue{
 
-    private static int fib(int n) {
-        if (n == 0) return 0;
-        if (n == 1) return 1;
-        return fib(n - 1) + fib(n - 2);
-    }
+    private String[] skills;
 
-    public static void main(String[] argv) throws Exception {
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost("localhost");
-
-        try (Connection connection = factory.newConnection();
-             Channel channel = connection.createChannel()) {
-            channel.queueDeclare(RPC_QUEUE_NAME, false, false, false, null);
-            channel.queuePurge(RPC_QUEUE_NAME);
-
-            channel.basicQos(1);
-
-            System.out.println(" [x] Awaiting RPC requests");
-
-            Object monitor = new Object();
-            DeliverCallback deliverCallback = (consumerTag, delivery) -> {
-                AMQP.BasicProperties replyProps = new AMQP.BasicProperties
-                        .Builder()
-                        .correlationId(delivery.getProperties().getCorrelationId())
-                        .build();
-
-                String response = "";
-
-                try {
-                    String message = new String(delivery.getBody(), "UTF-8");
-                    int n = Integer.parseInt(message);
-
-                    System.out.println(" [.] fib(" + message + ")");
-                    response += fib(n);
-                } catch (RuntimeException e) {
-                    System.out.println(" [.] " + e.toString());
-                } finally {
-                    channel.basicPublish("", delivery.getProperties().getReplyTo(), replyProps, response.getBytes("UTF-8"));
-                    channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
-                    // RabbitMq consumer worker thread notifies the RPC server owner thread
-                    synchronized (monitor) {
-                        monitor.notify();
-                    }
+    private void initTechnicianQueue() throws IOException{
+        for(String skill : skills) {
+            String key = "*." + skill.toLowerCase();
+            String queue = channel.queueDeclare(key, false, false, false, null).getQueue();
+            System.out.println("Technician queue: " + queue);
+            channel.queueBind(queue, "hospital", key);
+            Consumer consumer = new DefaultConsumer(channel) {
+                @Override
+                public void handleDelivery(String consumerTag,
+                                           Envelope envelope,
+                                           AMQP.BasicProperties properties,
+                                           byte[] body)
+                        throws IOException {
+                    String message = new String(body, "UTF-8");
+                    System.out.println("Received: " + message);
+                    String[] splittedMessage = message.split(" ");
+                    System.out.print("Handling message");
+                    String reply = splittedMessage[1] + " " + splittedMessage[0] + " done";
+                    channel.basicPublish("hospital",
+                            envelope.getRoutingKey().replace("." + splittedMessage[0], ""),
+                            null,
+                            reply.getBytes("UTF-8"));
+                    System.out.println("\nSent: " + reply);
                 }
             };
-
-            channel.basicConsume(RPC_QUEUE_NAME, false, deliverCallback, (consumerTag -> { }));
-            // Wait and be prepared to consume the message from RPC client.
-            while (true) {
-                synchronized (monitor) {
-                    try {
-                        monitor.wait();
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                }
-            }
+            channel.basicConsume(queue, true, consumer);
         }
+    }
+
+    public void run() throws IOException, TimeoutException {
+        System.out.println("Enter two technician skills, can be knee, elbow or hip.");
+        skills = reader.readLine().split(" ");
+        initChannel();
+        initInfoQueue();
+        initTechnicianQueue();
+        System.out.println("Waiting for tasks...");
+    }
+
+    public static void main(String[] argv) throws IOException, TimeoutException{
+        System.out.println("TECHNICIAN");
+        Technician technician = new Technician();
+        technician.run();
     }
 }
